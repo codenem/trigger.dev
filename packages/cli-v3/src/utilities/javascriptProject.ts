@@ -46,6 +46,33 @@ export class JavascriptProject {
     }
   }
 
+  async resolveDirectDependencies(): Promise<
+    Record<string, { version: string; external: boolean }>
+  > {
+    return tracer.startActiveSpan("JavascriptProject.resolveInternal", async (span) => {
+      const command = await this.#getCommand();
+
+      span.setAttributes({
+        packageManager: command.name,
+      });
+
+      try {
+        return await command.resolveDirectDependencies({
+          cwd: this.projectPath,
+        });
+      } catch (error) {
+        recordSpanException(span, error);
+        span.end();
+
+        logger.debug(`Failed to resolve internal dependencies using ${command.name}`, {
+          error,
+        });
+
+        return {};
+      }
+    });
+  }
+
   async resolveAll(
     packageNames: string[],
     options?: ResolveOptions
@@ -223,6 +250,10 @@ interface PackageManagerCommands {
 
   installDependencies(options: PackageManagerOptions): Promise<void>;
 
+  resolveDirectDependencies(
+    options: PackageManagerOptions
+  ): Promise<Record<string, { version: string; external: boolean }>>;
+
   resolveDependencyVersion(
     packageName: string,
     options: PackageManagerOptions
@@ -287,6 +318,46 @@ class PNPMCommands implements PackageManagerCommands {
     }
 
     return results;
+  }
+
+  async resolveDirectDependencies(options: PackageManagerOptions) {
+    const result = await this.#listDirectDependencies(options);
+
+    logger.debug(`Resolving direct dependencies using ${this.name}`);
+
+    const results: Record<string, { version: string; external: boolean }> = {};
+
+    for (const projectPkg of result) {
+      results[projectPkg.name] = { version: projectPkg.version, external: true };
+
+      if (projectPkg.dependencies) {
+        for (const [name, dep] of Object.entries(projectPkg.dependencies)) {
+          const { version, resolved } = dep;
+
+          results[name] = {
+            version: projectPkg.version,
+            external: version.startsWith("link:") && !resolved,
+          };
+        }
+      }
+    }
+
+    return results;
+  }
+
+  async #listDirectDependencies(options: PackageManagerOptions) {
+    const childProcess = await $({
+      cwd: options.cwd,
+      reject: false,
+    })`${this.cmd} list --recursive --json`;
+
+    if (childProcess.failed) {
+      logger.debug("Failed to list dependencies, using stdout anyway...", {
+        error: childProcess.stderr,
+      });
+    }
+
+    return JSON.parse(childProcess.stdout) as PnpmList;
   }
 
   async #listDependencies(packageNames: string[], options: PackageManagerOptions) {
@@ -360,6 +431,38 @@ class NPMCommands implements PackageManagerCommands {
     }
 
     return results;
+  }
+
+  async resolveDirectDependencies(options: PackageManagerOptions) {
+    const result = await this.#listDirectDependencies(options);
+
+    logger.debug(`Resolving direct dependencies using ${this.name}`);
+
+    const results: Record<string, { version: string; external: boolean }> = {};
+
+    for (const [name, dep] of Object.entries(result.dependencies)) {
+      const { version, resolved } = dep;
+      results[name] = { version, external: resolved.startsWith("file:") && !version };
+
+      // TODO recursive for NPM
+    }
+
+    return results;
+  }
+
+  async #listDirectDependencies(options: PackageManagerOptions) {
+    const childProcess = await $({
+      cwd: options.cwd,
+      reject: false,
+    })`${this.cmd} list --json`;
+
+    if (childProcess.failed) {
+      logger.debug("Failed to list dependencies, using stdout anyway...", {
+        error: childProcess.stderr,
+      });
+    }
+
+    return JSON.parse(childProcess.stdout) as NpmListOutput;
   }
 
   async #listDependencies(packageNames: string[], options: PackageManagerOptions) {
@@ -451,6 +554,33 @@ class YarnCommands implements PackageManagerCommands {
     }
 
     return results;
+  }
+
+  async resolveDirectDependencies(options: PackageManagerOptions) {
+    const result = await this.#listDirectDependencies(options);
+
+    logger.debug(`Resolving direct dependencies using ${this.name}`);
+
+    const results: Record<string, { version: string; external: boolean }> = {};
+
+    // TODO yarn
+
+    return results;
+  }
+
+  async #listDirectDependencies(options: PackageManagerOptions) {
+    const childProcess = await $({
+      cwd: options.cwd,
+      reject: false,
+    })`${this.cmd} info --all --json`;
+
+    if (childProcess.failed) {
+      logger.debug("Failed to list dependencies, using stdout anyway...", {
+        error: childProcess.stderr,
+      });
+    }
+
+    return childProcess.stdout;
   }
 
   async #listDependencies(packageNames: string[], options: PackageManagerOptions) {
